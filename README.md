@@ -1,5 +1,3 @@
-markdown
-
 # GBHub-Stress
 
 > GB28181 压力测试工具 — 模拟海量设备注册、心跳和实时播放
