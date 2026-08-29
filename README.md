@@ -129,10 +129,10 @@ RUST_LOG=info
 
 ```
 
-##8. 系统调优（推荐）
+## 8. 系统调优（推荐）
 
 在运行大规模压测前，建议进行以下系统调优：
-###8.1 提高文件描述符限制
+### 8.1 提高文件描述符限制
 
 默认限制通常为 1024，远小于大规模压测需求（每个设备需要多个文件描述符）。
 ```bash
@@ -144,7 +144,7 @@ ulimit -n 655350
 echo "* soft nofile 655350" | sudo tee -a /etc/security/limits.conf
 echo "* hard nofile 655350" | sudo tee -a /etc/security/limits.conf
 ```
-###8.2 调整 UDP 缓冲区大小
+### 8.2 调整 UDP 缓冲区大小
 
 UDP 缓冲区不足会导致丢包，影响压测准确性。
 
@@ -160,7 +160,7 @@ echo "net.core.wmem_max=134217728" | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
 ```
 
-###9.3 检查当前限制
+### 8.3 检查当前限制
 ```bash
 
 # 查看当前文件描述符限制
