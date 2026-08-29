@@ -1,6 +1,6 @@
 [package]
 name = "gbhub-stress"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "GB28181 压力测试工具 - 模拟海量设备注册、心跳和播放"
 authors = ["GBHub Team"]
