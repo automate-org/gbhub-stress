@@ -1,0 +1,59 @@
+[package]
+name = "gbhub-stress"
+version = "0.1.0"
+edition = "2021"
+description = "GB28181 压力测试工具 - 模拟海量设备注册、心跳和播放"
+authors = ["GBHub Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+mimalloc = { version = "0.1", default-features = false }
+tokio = { version = "1.40", features = ["full"] }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+rand = "0.8"
+uuid = { version = "1.10", features = ["v4"] }
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+dashmap = "6.0"
+md5 = "0.7"
+sha2 = "0.10"
+urlencoding = "2.1"
+encoding_rs = "0.8"
+
+# 内存分配器（可选，可显著提升高并发性能）
+# 取消注释以下依赖并添加配置代码到 main.rs 顶部
+# [dependencies]
+# mimalloc = { version = "0.1", default-features = false }
+
+[profile.release]
+# 最高优化级别（默认就是3，显式声明）
+opt-level = 3
+
+# 链接时优化：跨 crate 内联和优化
+lto = true
+
+# 合并代码生成单元，最大化优化机会
+codegen-units = 1
+
+# 使用 abort 而非 unwind，减少二进制大小和异常开销
+panic = "abort"
+
+# 移除调试符号，减小二进制体积
+strip = "symbols"
+
+# 关闭增量编译（release 模式默认关闭，显式声明）
+incremental = false
+
+# 关闭溢出检查（略微提升性能，信任代码安全）
+overflow-checks = false
+
+[profile.dev]
+# 开发模式保持快速编译
+opt-level = 0
+lto = false
+codegen-units = 256
+incremental = true
