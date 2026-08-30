@@ -16,6 +16,10 @@
 ### 编译
 
 ```bash
+# 从 crates.io 安装（需编译）
+cargo install gbhub-stress
+
+#克隆到本地编译
 cargo build --release
 ```
 
