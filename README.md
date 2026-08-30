@@ -27,16 +27,7 @@ cargo build --release
 ```bash
 bash run.sh
 ```
-性能参考
-场景	模拟上限	瓶颈
-注册 + 心跳	~50,000	UDP 端口数
-并发播放	~5,000~20,000	ZLM RTP 端口范围
-极限调优后	~100,000+	文件描述符 + 内存调优
 
-```bash
-# 提高文件描述符限制
-ulimit -n 655350
-```
 ## GBHub-Stress 环境变量配置说明
 
 GBHub-Stress 支持的所有环境变量，按功能分类说明。
