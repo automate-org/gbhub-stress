@@ -10,7 +10,9 @@ use sip::state::SipState;
 use stats::Stats;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use zlm_client::ZlmClient;
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -45,6 +47,23 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "3600".to_string())
         .parse()?;
 
+    // ---- 分批配置 ----
+    let batch_size_input: usize = std::env::var("BATCH_SIZE")
+        .unwrap_or_else(|_| "5000".to_string())
+        .parse()
+        .expect("BATCH_SIZE must be a number");
+    let batch_interval_secs: u64 = std::env::var("BATCH_INTERVAL")
+        .unwrap_or_else(|_| "30".to_string())
+        .parse()
+        .expect("BATCH_INTERVAL must be a number");
+
+    // 若 BATCH_SIZE=0，则禁用分批，一次性全部启动
+    let batch_size = if batch_size_input == 0 {
+        device_count
+    } else {
+        batch_size_input
+    };
+
     // ---- 解析固定流 ----
     let (app, stream) = fixed_stream
         .split_once('/')
@@ -58,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     // ---- 创建会话存储 ----
     let sessions: SessionStore = Arc::new(DashMap::new());
 
-    // ---- 创建统计实例（暂不启动定时打印） ----
+    // ---- 创建统计实例 ----
     let stats = Arc::new(Stats::new(device_count as u64));
 
     // ---- 解析上级地址 ----
@@ -70,59 +89,103 @@ async fn main() -> anyhow::Result<()> {
     );
     info!("Fixed stream: {}", fixed_stream);
     info!("Public IP: {}", public_ip);
+    if batch_size_input == 0 {
+        info!("BATCH_SIZE=0: disabling batching, starting all devices at once");
+    } else {
+        info!(
+            "Batch size: {}, interval: {}s",
+            batch_size, batch_interval_secs
+        );
+    }
 
     let mut handles = Vec::with_capacity(device_count);
 
-    for i in 0..device_count {
-        let device_id = format!("{}{:010}", device_id_prefix, i + 1);
-        let channel_id = format!("{}{:010}", device_id_prefix, i + 1 + 1000000);
-        let local_port = base_port + i as u16;
-        let local_addr = SocketAddr::from(([0, 0, 0, 0], local_port));
+    // ---- 分批创建设备 ----
+    for batch_start in (0..device_count).step_by(batch_size) {
+        let batch_end = std::cmp::min(batch_start + batch_size, device_count);
+        let batch_count = batch_end - batch_start;
 
-        let config = SipConfig {
-            local_addr,
-            sip_server: upstream_addr,
-            device_id: device_id.clone(),
-            channel_id,
-            realm: realm.clone(),
-            password: password.clone(),
-            transport: "UDP".to_string(),
-            server_id: Some(device_id.clone()),
-            stats: stats.clone(),
-        };
+        info!(
+            "Starting batch: devices {} to {} ({} devices)",
+            batch_start + 1,
+            batch_end,
+            batch_count
+        );
 
-        let state = match SipState::new(
-            config,
-            zlm_client.clone(),
-            sessions.clone(),
-            fixed_app.clone(),
-            fixed_stream_name.clone(),
-            public_ip.clone(),
-            heartbeat_interval,
-            register_expires,
-            stats.clone(),
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("Failed to create device {}: {}", device_id, e);
-                continue;
+        for i in batch_start..batch_end {
+            let device_id = format!("{}{:010}", device_id_prefix, i + 1);
+            let channel_id = format!("{}{:010}", device_id_prefix, i + 1 + 1000000);
+            let local_port = base_port + i as u16;
+            let local_addr = SocketAddr::from(([0, 0, 0, 0], local_port));
+
+            let config = SipConfig {
+                local_addr,
+                sip_server: upstream_addr,
+                device_id: device_id.clone(),
+                channel_id,
+                realm: realm.clone(),
+                password: password.clone(),
+                transport: "UDP".to_string(),
+                server_id: Some(device_id.clone()),
+                stats: stats.clone(),
+            };
+
+            let state = match SipState::new(
+                config,
+                zlm_client.clone(),
+                sessions.clone(),
+                fixed_app.clone(),
+                fixed_stream_name.clone(),
+                public_ip.clone(),
+                heartbeat_interval,
+                register_expires,
+                stats.clone(),
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to create device {}: {}", device_id, e);
+                    continue;
+                }
+            };
+
+            let state = Arc::new(state);
+            let device_id_clone = state.config.device_id.clone();
+
+            let handle = tokio::spawn(async move {
+                if let Err(e) = state.run_forever().await {
+                    log::error!("Device {} exited: {}", device_id_clone, e);
+                }
+            });
+            handles.push(handle);
+        }
+
+        // ---- 动态等待：等待本批所有设备注册完成或超时 ----
+        if batch_end < device_count {
+            info!(
+                "Waiting for batch registration completion (max {}s)...",
+                batch_interval_secs
+            );
+            let start = std::time::Instant::now();
+            while stats.registered_count() < batch_end
+                && start.elapsed() < Duration::from_secs(batch_interval_secs)
+            {
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
-        };
-
-        let state = Arc::new(state);
-        let device_id_clone = state.config.device_id.clone();
-
-        let handle = tokio::spawn(async move {
-            if let Err(e) = state.run_forever().await {
-                log::error!("Device {} exited: {}", device_id_clone, e);
+            if stats.registered_count() >= batch_end {
+                info!(
+                    "Batch {} ({} devices) registered, proceeding.",
+                    batch_start / batch_size + 1,
+                    batch_count
+                );
+            } else {
+                info!(
+                    "Batch {} registration timeout after {}s, proceeding.",
+                    batch_start / batch_size + 1,
+                    batch_interval_secs
+                );
             }
-        });
-        handles.push(handle);
-
-        if i % 100 == 0 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
     }
 

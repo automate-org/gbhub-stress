@@ -5,7 +5,7 @@ use crate::stats::Stats;
 use crate::zlm_client::ZlmClient;
 use anyhow::Context;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -30,6 +30,7 @@ pub struct SipState {
     pub register_expires: u32,
     pub channel_id: String,
     pub stats: Arc<Stats>,
+    pub registered: AtomicBool,
     shutdown_tx: broadcast::Sender<()>,
 }
 
@@ -84,6 +85,7 @@ impl SipState {
             register_expires,
             channel_id,
             stats,
+            registered: AtomicBool::new(false),
             shutdown_tx,
         })
     }
@@ -195,6 +197,7 @@ impl SipState {
     }
 
     pub async fn run_forever(self: Arc<Self>) -> anyhow::Result<()> {
+        // 初始注册（最多 5 次，间隔 5 秒）
         let mut reg_ok = false;
         for i in 0..5 {
             match self.register_with_retry().await {
@@ -212,6 +215,22 @@ impl SipState {
             anyhow::bail!("REGISTER failed after 5 retries");
         }
 
+        // 等待 200 OK（最多 10 秒）
+        let start = std::time::Instant::now();
+        while !self.registered.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(10)
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !self.registered.load(Ordering::Relaxed) {
+            log::warn!(
+                "Device {} registration timeout, will retry later",
+                self.config.device_id
+            );
+        } else {
+            log::info!("Device {} registered successfully", self.config.device_id);
+        }
+
+        // 进入主循环（心跳 + 接收消息）
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let mut buf = vec![0u8; 65535];
         let mut heartbeat_interval = tokio::time::interval(self.heartbeat_interval);
@@ -228,6 +247,7 @@ impl SipState {
                     let lr = last_register.clone();
                     let hf = heartbeat_failures.clone();
                     tokio::spawn(async move {
+                        // 心跳发送
                         let mut retries = 3;
                         let mut success = false;
                         while retries > 0 && !success {
@@ -247,6 +267,7 @@ impl SipState {
                             log::error!("Heartbeat failed after 3 retries");
                         }
 
+                        // 定期重注册
                         let failures = hf.load(Ordering::Relaxed);
                         if failures < 5 {
                             let expires = self_ref.registered_expires.load(Ordering::Relaxed).max(60);
@@ -303,7 +324,6 @@ impl SipState {
             return Ok(());
         }
 
-        // ---- 解析 SIP 消息 ----
         let (first_line, headers) = match parse_sip_lines(&data) {
             Ok(v) => v,
             Err(e) => {
@@ -314,6 +334,7 @@ impl SipState {
 
         // ---- 处理 SIP 响应 ----
         if first_line.starts_with("SIP/2.0") {
+            // 处理 401/407（认证挑战）
             if first_line.contains("401 Unauthorized")
                 || first_line.contains("407 Proxy Authentication Required")
             {
@@ -325,11 +346,71 @@ impl SipState {
                         .send_register_to(self.config.sip_server, self.register_expires, true)
                         .await;
                 }
+                return Ok(());
             }
+
+            // ---- 处理 200 OK ----
+            if first_line.contains("200 OK") {
+                if let Some(cseq) = get_header(&headers, "CSeq") {
+                    let cseq_upper = cseq.to_uppercase();
+
+                    // 1. 标准 REGISTER 的 200 OK（最高优先级）
+                    if cseq_upper.contains("REGISTER") {
+                        if let Some(to) = get_header(&headers, "To") {
+                            if let Ok(dev_id) = crate::sip::utils::extract_device_id(to) {
+                                if dev_id == self.config.device_id {
+                                    if !self.registered.load(Ordering::Relaxed) {
+                                        self.registered.store(true, Ordering::Relaxed);
+                                        self.stats.mark_registered(&self.config.device_id);
+                                        log::info!(
+                                            "Device {} received 200 OK for REGISTER",
+                                            dev_id
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 2. 心跳（MESSAGE）的 200 OK → 自动注册（默认开启）
+                    else if cseq_upper.contains("MESSAGE")
+                        && !self.registered.load(Ordering::Relaxed)
+                    {
+                        if let Some(to) = get_header(&headers, "To") {
+                            if let Ok(dev_id) = crate::sip::utils::extract_device_id(to) {
+                                if dev_id == self.config.device_id {
+                                    self.registered.store(true, Ordering::Relaxed);
+                                    self.stats.mark_registered(&self.config.device_id);
+                                    log::info!(
+                                        "Device {} auto-registered via heartbeat 200 OK",
+                                        dev_id
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
+
+            // ---- 处理 403 Forbidden（心跳注册被拒） ----
+            if first_line.contains("403 Forbidden") {
+                if let Some(cseq) = get_header(&headers, "CSeq") {
+                    if cseq.to_uppercase().contains("MESSAGE") {
+                        log::debug!(
+                            "Device {} heartbeat registration rejected (403)",
+                            self.config.device_id
+                        );
+                        // 可在此添加重试逻辑（但当前保持简单）
+                    }
+                }
+                return Ok(());
+            }
+
+            // 其他响应（如 3xx 重定向等）可直接忽略
             return Ok(());
         }
 
-        // ---- 处理 SIP 请求 ----
+        // ---- 处理 SIP 请求（INVITE, BYE, MESSAGE 等） ----
         if let Some(ver) = get_header(&headers, "X-GB-Ver") {
             let ver = if ver.contains("3.0") { "2022" } else { "2016" };
             *self.peer_version.lock().await = ver.to_string();

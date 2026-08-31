@@ -30,11 +30,7 @@ md5 = "0.7"
 sha2 = "0.10"
 urlencoding = "2.1"
 encoding_rs = "0.8"
-
-# 内存分配器（可选，可显著提升高并发性能）
-# 取消注释以下依赖并添加配置代码到 main.rs 顶部
-# [dependencies]
-# mimalloc = { version = "0.1", default-features = false }
+chrono = "0.4"
 
 [profile.release]
 # 最高优化级别（默认就是3，显式声明）

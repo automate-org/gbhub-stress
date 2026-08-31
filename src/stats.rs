@@ -1,3 +1,4 @@
+use chrono::Local;
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -69,9 +70,10 @@ impl Stats {
         let invites = self.total_invites();
         let invited_devices = self.invited_devices_count();
 
-        println!(
-            "\n========== GBHub-Stress 压测统计 =========="
-        );
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S");
+
+        println!("========== GBHub-Stress 压测统计 ==========");
+        println!("  {}", now);
         println!("  已注册设备数: {}/{} ({:.2}%)", registered, total, rate);
         println!("  总 INVITE 请求数: {}", invites);
         println!("  涉及设备数: {}", invited_devices);

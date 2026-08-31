@@ -181,10 +181,7 @@ impl SipState {
             .send_register_to(self.config.sip_server, self.register_expires, false)
             .await
         {
-            Ok(_) => {
-                self.stats.mark_registered(&self.config.device_id);
-                Ok(())
-            }
+            Ok(_) => Ok(()), // 不再调用 stats.mark_registered
             Err(e) => {
                 if e.to_string().contains("401") || e.to_string().contains("407") {
                     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -192,10 +189,7 @@ impl SipState {
                         .send_register_to(self.config.sip_server, self.register_expires, true)
                         .await
                     {
-                        Ok(_) => {
-                            self.stats.mark_registered(&self.config.device_id);
-                            Ok(())
-                        }
+                        Ok(_) => Ok(()), // 不再调用 stats.mark_registered
                         Err(e2) => {
                             log::error!("Authenticated REGISTER failed: {}", e2);
                             Err(e2)

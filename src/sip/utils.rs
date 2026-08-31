@@ -126,3 +126,28 @@ pub fn parse_sdp(body: &str) -> anyhow::Result<(String, u16, u32, u8, bool, bool
     let passive = lines.iter().any(|l| l.trim() == "a=setup:passive");
     Ok((remote_ip, media_port as u16, ssrc, is_udp, false, passive))
 }
+
+/// 从 SIP URI 中提取设备 ID（支持 To 头格式）
+pub fn extract_device_id(sip_uri: &str) -> anyhow::Result<String> {
+    let s = sip_uri
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_start_matches("sip:");
+    if let Some(at_pos) = s.find('@') {
+        let id_part = &s[..at_pos];
+        // 去掉可能存在的 ;tag= 等参数
+        let id = id_part.split(';').next().unwrap_or(id_part).trim();
+        if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(id.to_string());
+        }
+        // 即使不是纯数字也返回（记录警告）
+        log::warn!(
+            "extract_device_id: extracted non-digit ID '{}' from '{}'",
+            id,
+            sip_uri
+        );
+        return Ok(id.to_string());
+    }
+    anyhow::bail!("invalid SIP URI: {}", sip_uri)
+}

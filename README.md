@@ -91,7 +91,8 @@ GBHub-Stress 支持的所有环境变量，按功能分类说明。
 | `CATALOG_PAGE_DELAY_MS` | `300` | 目录查询（Catalog）分页发送间隔（毫秒） |
 | `STREAM_READY_TIMEOUT_SECS` | `5` | 等待 ZLM 流就绪的超时时间（秒） |
 | `SIP_INVITE_TIMEOUT_SECS` | `15` | INVITE 请求等待响应的超时时间（秒） |
-
+| `BATCH_SIZE` |	`5000` |	每批启动的设备数量。设为 0 则禁用分批，一次性全部启动|
+| `BATCH_INTERVAL`	| `30` |	批次之间的最长等待时间（秒）。若本批设备提前全部注册完成，则立即进入下一批；超时则强制继续。|
 ---
 
 ### 7. 示例配置
@@ -116,6 +117,10 @@ UPSTREAM_PORT=6060
 # 心跳与注册
 HEARTBEAT_INTERVAL=30
 REGISTER_EXPIRES=3600
+
+# 高级调优（按需调整）
+BATCH_SIZE=2000          # 每批 2000 设备
+BATCH_INTERVAL=60        # 每批等待最多 60 秒
 
 # 日志
 RUST_LOG=info
